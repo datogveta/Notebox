@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Notebox.pro Dashboard</title>
+  <style>
+    /* Basic Styles */
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+    header {
+      background: #4A90E2;
+      color: #fff;
+      padding: 1em;
+      text-align: center;
+    }
+    .container {
+      display: flex;
+    }
+    .sidebar {
+      width: 250px;
+      background: #f4f4f4;
+      padding: 1em;
+      box-sizing: border-box;
+    }
+    .main {
+      flex: 1;
+      padding: 1em;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.5em 1em;
+      margin: 0.5em 0;
+      background: #4A90E2;
+      color: #fff;
+      text-decoration: none;
+      border-radius: 3px;
+      cursor: pointer;
+      border: none;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 0.5em;
+      margin-top: 0.5em;
+    }
+    ul {
+      list-style-type: none;
+      padding: 0;
+    }
+    li {
+      margin-bottom: 1em;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 0.5em;
+    }
+    /* Modal styling */
+    #note-modal {
+      display: none;
+      position: fixed;
+      top: 20%;
+      left: 30%;
+      width: 40%;
+      background: #fff;
+      padding: 1em;
+      border: 1px solid #ddd;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+      z-index: 100;
+    }
+  </style>
+  
+  <!-- Firebase SDKs (using compat libraries for ease of integration) -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-storage-compat.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Notebox.pro Dashboard</h1>
+  </header>
+  
+  <!-- Authentication Section -->
+  <div id="auth-section" style="padding: 1em;">
+    <h2>Login / Signup</h2>
+    <input type="email" id="email" placeholder="Email">
+    <input type="password" id="password" placeholder="Password">
+    <button id="login-btn" class="btn">Login</button>
+    <button id="signup-btn" class="btn">Signup</button>
+    <!-- Google Sign-In Button -->
+    <button id="google-signin-btn" class="btn">Sign in with Google</button>
+  </div>
+  
+  <!-- Dashboard (visible after authentication) -->
+  <div id="dashboard" style="display:none;">
+    <div class="sidebar">
+      <h3>My Notes</h3>
+      <button id="add-new-note-btn" class="btn">Add New Note</button>
+      <h3>Cloud Sync</h3>
+      <button class="btn" id="sync-gdrive-btn">Mirror to Google Drive</button>
+      <button class="btn" id="sync-ms-btn">Mirror to MS Environment</button>
+      <h3>Telegram Bot</h3>
+      <p>Your Bot Link:</p>
+      <input type="text" id="bot-link" readonly style="width:100%; padding:0.5em;">
+      <button id="logout-btn" class="btn" style="margin-top:1em;">Logout</button>
+    </div>
+    
+    <div class="main">
+      <h2>Your Notes</h2>
+      <ul id="notes-list"></ul>
+    </div>
+  </div>
+  
+  <!-- Add Note Modal -->
+  <div id="note-modal">
+    <h3>Add New Note</h3>
+    <input type="text" id="note-title" placeholder="Title">
+    <textarea id="note-content" placeholder="Content"></textarea>
+    <input type="file" id="note-file">
+    <button id="save-note-btn" class="btn">Save Note</button>
+    <button id="close-modal-btn" class="btn" style="background:#ccc;">Cancel</button>
+  </div>
+  
+  <script>
+    /******** Firebase Initialization ********/
+    // Replace the following configuration with your actual Firebase project's settings.
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_AUTH_DOMAIN",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_STORAGE_BUCKET",
+      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+    const storage = firebase.storage();
+    
+    /******** DOM ELEMENTS ********/
+    const authSection = document.getElementById("auth-section");
+    const dashboard = document.getElementById("dashboard");
+    const emailInput = document.getElementById("email");
+    const passwordInput = document.getElementById("password");
+    const loginBtn = document.getElementById("login-btn");
+    const signupBtn = document.getElementById("signup-btn");
+    const googleSigninBtn = document.getElementById("google-signin-btn");
+    const logoutBtn = document.getElementById("logout-btn");
+    const botLinkInput = document.getElementById("bot-link");
+    const addNewNoteBtn = document.getElementById("add-new-note-btn");
+    const notesList = document.getElementById("notes-list");
+    const noteModal = document.getElementById("note-modal");
+    const closeModalBtn = document.getElementById("close-modal-btn");
+    const saveNoteBtn = document.getElementById("save-note-btn");
+    const noteTitleInput = document.getElementById("note-title");
+    const noteContentInput = document.getElementById("note-content");
+    const noteFileInput = document.getElementById("note-file");
+    
+    /******** Authentication Handlers ********/
+    // Email/Password Signup
+    signupBtn.addEventListener("click", () => {
+      const email = emailInput.value;
+      const password = passwordInput.value;
+      auth.createUserWithEmailAndPassword(email, password)
+        .then(userCredential => {
+          console.log("Signup successful:", userCredential.user);
+        })
+        .catch(error => console.error("Signup Error:", error));
+    });
+    
+    // Email/Password Login
+    loginBtn.addEventListener("click", () => {
+      const email = emailInput.value;
+      const password = passwordInput.value;
+      auth.signInWithEmailAndPassword(email, password)
+        .then(userCredential => {
+          console.log("Login successful:", userCredential.user);
+        })
+        .catch(error => console.error("Login Error:", error));
+    });
+    
+    // Google Sign-In
+    googleSigninBtn.addEventListener("click", () => {
+      const provider = new firebase.auth.GoogleAuthProvider();
+      auth.signInWithPopup(provider)
+        .then(result => {
+          console.log("Google Sign-In successful:", result.user);
+        })
+        .catch(error => console.error("Google Sign-In Error:", error));
+    });
+    
+    // Logout Handler
+    logoutBtn.addEventListener("click", () => {
+      auth.signOut().then(() => {
+        console.log("User signed out");
+      });
+    });
+    
+    // Auth State Observer: Update UI when authentication state changes
+    auth.onAuthStateChanged(user => {
+      if (user) {
+        authSection.style.display = "none";
+        dashboard.style.display = "flex";
+        // Set personalized Telegram bot link using the user's UID
+        botLinkInput.value = "https://t.me/NoteboxBot?start=" + user.uid;
+        loadNotes(user.uid);
+      } else {
+        authSection.style.display = "block";
+        dashboard.style.display = "none";
+      }
+    });
+    
+    /******** Note Modal & CRUD Handlers ********/
+    // Show the modal for adding a new note
+    addNewNoteBtn.addEventListener("click", () => {
+      noteModal.style.display = "block";
+    });
+    
+    // Close the note modal
+    closeModalBtn.addEventListener("click", () => {
+      noteModal.style.display = "none";
+    });
+    
+    // Utility Function: Generate a thumbnail from an image file
+    function generateThumbnail(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = function(e) {
+          const img = new Image();
+          img.onload = function() {
+            const canvas = document.createElement("canvas");
+            const MAX_WIDTH = 200; // Desired thumbnail width
+            const scaleSize = MAX_WIDTH / img.width;
+            canvas.width = MAX_WIDTH;
+            canvas.height = img.height * scaleSize;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(blob => {
+              if (blob) resolve(blob);
+              else reject(new Error("Thumbnail generation failed"));
+            }, file.type, 0.7);
+          };
+          img.onerror = error => reject(error);
+          img.src = e.target.result;
+        };
+        reader.onerror = error => reject(error);
+        reader.readAsDataURL(file);
+      });
+    }
+    
+    // Save Note Handler: Upload file (and thumbnail if image) and save note data to Firestore
+    saveNoteBtn.addEventListener("click", async () => {
+      const user = auth.currentUser;
+      if (!user) return;
+      const title = noteTitleInput.value;
+      const content = noteContentInput.value;
+      let fileUrl = "";
+      let thumbnailUrl = "";
+      const timestamp = Date.now();
+      
+      if (noteFileInput.files.length > 0) {
+        const file = noteFileInput.files[0];
+        const filePath = `notes/${user.uid}/${timestamp}_${file.name}`;
+        const fileRef = storage.ref().child(filePath);
+        await fileRef.put(file);
+        fileUrl = await fileRef.getDownloadURL();
+        
+        if (file.type.startsWith("image/")) {
+          try {
+            const thumbBlob = await generateThumbnail(file);
+            const thumbPath = `notes/${user.uid}/${timestamp}_thumb_${file.name}`;
+            const thumbRef = storage.ref().child(thumbPath);
+            await thumbRef.put(thumbBlob);
+            thumbnailUrl = await thumbRef.getDownloadURL();
+          } catch (error) {
+            console.error("Thumbnail generation error:", error);
+          }
+        }
+      }
+      
+      await db.collection("notes").add({
+        uid: user.uid,
+        title: title,
+        content: content,
+        fileUrl: fileUrl,
+        thumbnailUrl: thumbnailUrl,  // For preview purposes
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      
+      // Reset inputs and close modal
+      noteTitleInput.value = "";
+      noteContentInput.value = "";
+      noteFileInput.value = "";
+      noteModal.style.display = "none";
+    });
+    
+    // Load Notes: Listen for note changes in Firestore for the current user
+    function loadNotes(uid) {
+      db.collection("notes")
+        .where("uid", "==", uid)
+        .orderBy("createdAt", "desc")
+        .onSnapshot(snapshot => {
+          notesList.innerHTML = "";
+          snapshot.forEach(doc => {
+            const note = doc.data();
+            const li = document.createElement("li");
+            li.innerHTML = `
+              <strong>${note.title}</strong><br>
+              ${note.content}<br>
+              ${note.thumbnailUrl ? `<img src="${note.thumbnailUrl}" alt="Thumbnail" style="max-width:100px; display:block; margin-top:0.5em;">` : ""}
+              ${note.fileUrl ? `<a href="${note.fileUrl}" target="_blank">View Attachment</a><br>` : ""}
+              <small>${note.createdAt ? note.createdAt.toDate().toLocaleString() : ""}</small>
+            `;
+            notesList.appendChild(li);
+          });
+        });
+    }
+    
+    /******** Cloud Sync Placeholder Handlers ********/
+    document.getElementById("sync-gdrive-btn").addEventListener("click", () => {
+      alert("This feature will mirror your notes to Google Drive (to be implemented).");
+    });
+    document.getElementById("sync-ms-btn").addEventListener("click", () => {
+      alert("This feature will mirror your notes to the MS environment (to be implemented).");
+    });
+  </script>
+</body>
+</html>
