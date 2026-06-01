@@ -243,6 +243,24 @@ bot.on('message', async (msg) => {
         return;
       }
       
+      // Get the next note number for this user
+      let nextNum = 1;
+      try {
+        const existingNotes = await db.collection('notes')
+          .where('uid', '==', uid)
+          .orderBy('noteNumber', 'desc')
+          .limit(1)
+          .get();
+        if (!existingNotes.empty) {
+          const lastNote = existingNotes.docs[0].data();
+          if (lastNote.noteNumber) {
+            nextNum = lastNote.noteNumber + 1;
+          }
+        }
+      } catch (err) {
+        console.warn("Could not query max noteNumber in bot, defaulting to 1:", err);
+      }
+      
       // Write draft note to Firestore
       const noteRef = await db.collection('notes').add({
         uid: uid,
@@ -252,6 +270,7 @@ bot.on('message', async (msg) => {
         thumbnailUrl: thumbnailUrl,
         attachments: [],
         status: 'published',
+        noteNumber: nextNum,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         source: 'telegram',
         isVoice: isVoice

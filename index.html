@@ -805,6 +805,10 @@ padding: 2rem;
             Link Google Drive
           </button>
           
+          <a id="open-google-sheet-btn" href="#" target="_blank" class="btn btn-secondary" style="display: none; width: 100%; margin-top: 0.75rem; font-size: 0.8rem; padding: 0.5rem 1rem; align-items: center; justify-content: center; gap: 0.4rem; border-color: rgba(16, 185, 129, 0.3); background: rgba(16, 185, 129, 0.05); color: var(--color-success); font-weight: 600; text-decoration: none; box-sizing: border-box;">
+            📂 Open Master Google Sheet
+          </a>
+          
           <button class="btn btn-secondary" id="resync-all-btn" style="display: none; width: 100%; margin-top: 0.75rem; font-size: 0.8rem; padding: 0.5rem 1rem; align-items: center; justify-content: center; gap: 0.4rem;">
             🔄 Re-Sync All to Drive
           </button>
@@ -1462,9 +1466,14 @@ function getActiveRowMedia() {
     
     // Auth State Observer
     auth.onAuthStateChanged(user => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const isPreview = urlParams.get("preview");
+      
       if (user) {
-        authSection.style.display = "none";
-        dashboard.style.display = "flex";
+        if (!isPreview) {
+          authSection.style.display = "none";
+          dashboard.style.display = "flex";
+        }
         userDisplay.style.display = "block";
         userEmailHeader.innerText = user.email || user.displayName || "User Session";
         
@@ -1477,9 +1486,12 @@ function getActiveRowMedia() {
         }
         
         loadNotes(user.uid);
+        selfHealNoteNumbers(user.uid);
       } else {
-        authSection.style.display = "flex";
-        dashboard.style.display = "none";
+        if (!isPreview) {
+          authSection.style.display = "flex";
+          dashboard.style.display = "none";
+        }
         userDisplay.style.display = "none";
       }
     });
@@ -1596,6 +1608,23 @@ function getActiveRowMedia() {
           }
         }
         
+        let nextNum = 1;
+        try {
+          const existingNotes = await db.collection("notes")
+            .where("uid", "==", user.uid)
+            .orderBy("noteNumber", "desc")
+            .limit(1)
+            .get();
+          if (!existingNotes.empty) {
+            const lastNote = existingNotes.docs[0].data();
+            if (lastNote.noteNumber) {
+              nextNum = lastNote.noteNumber + 1;
+            }
+          }
+        } catch (err) {
+          console.warn("Could not query max noteNumber, defaulting to 1:", err);
+        }
+
         await db.collection("notes").add({
           uid: user.uid,
           title: title,
@@ -1603,6 +1632,7 @@ function getActiveRowMedia() {
           fileUrl: fileUrl,
           thumbnailUrl: thumbnailUrl,
           status: 'published',
+          noteNumber: nextNum,
           createdAt: firebase.firestore.FieldValue.serverTimestamp()
         });
         
@@ -1895,7 +1925,10 @@ function getActiveRowMedia() {
 
             li.innerHTML = `
               <div class="note-col-date">${timestampFormatted}</div>
-              <div class="note-col-title" title="${escapeHTML(note.title || '')}">${escapeHTML(note.title || 'Untitled Note')}</div>
+              <div class="note-col-title" title="${escapeHTML(note.title || '')}">
+                ${note.noteNumber ? `<span class="note-num-badge" style="background: rgba(255,255,255,0.05); color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-right: 0.4rem; border: 1px solid rgba(255,255,255,0.08); font-family: monospace;">#${note.noteNumber}</span>` : ""}
+                ${escapeHTML(note.title || 'Untitled Note')}
+              </div>
               <div class="note-col-content" title="${escapeHTML(note.content || '')}">
                 ${escapeHTML(note.content || "")}
               </div>
@@ -2020,6 +2053,45 @@ function getActiveRowMedia() {
     
     // Real-Time Google Drive Sync Engine (Individual Files + Master Google Sheet Logger)
     const inProgressSyncs = new Set();
+
+    async function selfHealNoteNumbers(uid) {
+      try {
+        const snapshot = await db.collection("notes")
+          .where("uid", "==", uid)
+          .orderBy("createdAt", "asc")
+          .get();
+        
+        let currentMax = 0;
+        const unnumberedDocs = [];
+        
+        snapshot.forEach(doc => {
+          const data = doc.data();
+          if (data.noteNumber) {
+            if (data.noteNumber > currentMax) {
+              currentMax = data.noteNumber;
+            }
+          } else {
+            unnumberedDocs.push(doc);
+          }
+        });
+        
+        if (unnumberedDocs.length > 0) {
+          console.log(`Self-healing: Found ${unnumberedDocs.length} unnumbered notes. Assigning numbers starting from ${currentMax + 1}...`);
+          const batch = db.batch();
+          for (let i = 0; i < unnumberedDocs.length; i++) {
+            const nextNum = currentMax + 1 + i;
+            batch.update(unnumberedDocs[i].ref, {
+              noteNumber: nextNum,
+              driveSynced: false
+            });
+          }
+          await batch.commit();
+          console.log("Self-healing note numbers completed successfully.");
+        }
+      } catch (err) {
+        console.error("Error in selfHealNoteNumbers:", err);
+      }
+    }
 
     function getPublicFirebaseUrl(url) {
       if (!url || typeof url !== 'string') return "";
@@ -2412,47 +2484,181 @@ function getActiveRowMedia() {
           });
         }
 
-        const metadata = {
-          name: `${note.title || "Note"}_${noteId.substring(0,6)}.txt`,
-          parents: [folderId]
-        };
+        const noteNum = note.noteNumber || 1;
 
-        // Standard Google Drive multipart boundary structure
-        const boundary = "314159265358979323846";
-        const delimiter = `\r\n--${boundary}\r\n`;
-        const closeDelimiter = `\r\n--${boundary}--`;
+        async function uploadFileToDrive(fileName, contentType, blob) {
+          let existingFileId = null;
+          try {
+            const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='${fileName}' and '${folderId}' in parents and trashed=false&fields=files(id)`, {
+              headers: { "Authorization": `Bearer ${token}` }
+            });
+            if (searchRes.ok) {
+              const searchData = await searchRes.json();
+              if (searchData.files && searchData.files.length > 0) {
+                existingFileId = searchData.files[0].id;
+              }
+            }
+          } catch (err) {
+            console.warn(`Error searching for existing file ${fileName}:`, err);
+          }
 
-        const multipartBody = 
-          delimiter +
-          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-          JSON.stringify(metadata) +
-          delimiter +
-          'Content-Type: text/plain; charset=UTF-8\r\n\r\n' +
-          fileContent +
-          closeDelimiter;
+          if (existingFileId) {
+            console.log(`File ${fileName} already exists (ID: ${existingFileId}). Overwriting old copy...`);
+            try {
+              await fetch(`https://www.googleapis.com/drive/v3/files/${existingFileId}`, {
+                method: "DELETE",
+                headers: { "Authorization": `Bearer ${token}` }
+              });
+            } catch (err) {
+              console.warn(`Failed to delete old copy of ${fileName}:`, err);
+            }
+          }
 
-        // Perform individual note text file upload
-        const uploadRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${token}`,
-            "Content-Type": `multipart/related; boundary=${boundary}`
-          },
-          body: multipartBody
-        });
+          console.log(`Uploading new file ${fileName} to Google Drive...`);
+          const metadata = {
+            name: fileName,
+            parents: [folderId]
+          };
+          const boundary = "314159265358979323846";
+          const delimiter = `\r\n--${boundary}\r\n`;
+          const closeDelimiter = `\r\n--${boundary}--`;
 
-        if (uploadRes.status === 401) {
-          handleGoogleAuthExpired();
-          return;
+          const metadataPart = delimiter +
+            'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+            JSON.stringify(metadata) +
+            delimiter +
+            `Content-Type: ${contentType}\r\n\r\n`;
+
+          const multipartBlob = new Blob([
+            metadataPart,
+            blob,
+            closeDelimiter
+          ], { type: `multipart/related; boundary=${boundary}` });
+
+          const uploadRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${token}`
+            },
+            body: multipartBlob
+          });
+
+          if (uploadRes.status === 401) {
+            handleGoogleAuthExpired();
+            return null;
+          }
+
+          if (uploadRes.ok) {
+            const data = await uploadRes.json();
+            console.log(`Successfully uploaded ${fileName} to Drive (ID: ${data.id})`);
+            return data.id;
+          } else {
+            console.error(`Failed to upload ${fileName} to Drive:`, await uploadRes.text());
+            return null;
+          }
         }
 
-        let uploadedFileId = null;
-        if (uploadRes.ok) {
-          const uploadData = await uploadRes.json();
-          uploadedFileId = uploadData.id;
-          console.log(`Note ${noteId} individual file mirrored successfully: ${uploadedFileId}`);
-        } else {
-          console.error("Google Drive File Sync failed:", await uploadRes.text());
+        // Upload Summary text file
+        const txtBlob = new Blob([fileContent], { type: 'text/plain; charset=UTF-8' });
+        const txtFileName = `${noteNum}.txt`;
+        const uploadedFileId = await uploadFileToDrive(txtFileName, 'text/plain', txtBlob);
+
+        // Upload voice and other media files
+        const filesToUpload = [];
+
+        if (note.fileUrl) {
+          filesToUpload.push({
+            url: getPublicFirebaseUrl(note.fileUrl),
+            isVoice: note.isVoice,
+            originalName: note.isVoice ? "voice.ogg" : "file"
+          });
+        }
+
+        if (note.attachments && note.attachments.length > 0) {
+          note.attachments.forEach(att => {
+            filesToUpload.push({
+              url: getPublicFirebaseUrl(att.fileUrl),
+              isVoice: att.type === 'voice',
+              originalName: att.name || "file"
+            });
+          });
+        }
+
+        // Group by extension
+        const extGroups = {};
+        filesToUpload.forEach(f => {
+          let ext = "dat";
+          const cleanUrl = f.url.split('?')[0].toLowerCase();
+          const match = cleanUrl.match(/\.([a-z0-9]+)$/);
+          if (match) {
+            ext = match[1];
+          } else {
+            const nameMatch = f.originalName.toLowerCase().match(/\.([a-z0-9]+)$/);
+            if (nameMatch) ext = nameMatch[1];
+          }
+          
+          if (!extGroups[ext]) extGroups[ext] = [];
+          extGroups[ext].push(f);
+        });
+
+        // Determine final filenames
+        const namedFiles = [];
+        Object.keys(extGroups).forEach(ext => {
+          const list = extGroups[ext];
+          if (list.length === 1) {
+            namedFiles.push({
+              ...list[0],
+              fileName: `${noteNum}.${ext}`,
+              ext: ext
+            });
+          } else {
+            list.forEach((f, idx) => {
+              const letter = String.fromCharCode(97 + idx); // 'a', 'b', 'c'...
+              namedFiles.push({
+                ...f,
+                fileName: `${noteNum}${letter}.${ext}`,
+                ext: ext
+              });
+            });
+          }
+        });
+
+        function getContentTypeByExtension(ext) {
+          const map = {
+            'txt': 'text/plain',
+            'ogg': 'audio/ogg',
+            'mp3': 'audio/mpeg',
+            'wav': 'audio/wav',
+            'm4a': 'audio/x-m4a',
+            'opus': 'audio/ogg',
+            'amr': 'audio/amr',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'png': 'image/png',
+            'gif': 'image/gif',
+            'webp': 'image/webp',
+            'mp4': 'video/mp4',
+            'mov': 'video/quicktime',
+            'avi': 'video/x-msvideo',
+            'pdf': 'application/pdf'
+          };
+          return map[ext.toLowerCase()] || 'application/octet-stream';
+        }
+
+        for (const fileToSync of namedFiles) {
+          try {
+            console.log(`Downloading attachment ${fileToSync.fileName} from Firebase Storage...`);
+            const getBlobRes = await fetch(fileToSync.url);
+            if (getBlobRes.ok) {
+              const blob = await getBlobRes.blob();
+              const contentType = getContentTypeByExtension(fileToSync.ext);
+              await uploadFileToDrive(fileToSync.fileName, contentType, blob);
+            } else {
+              console.warn(`Failed to fetch attachment from URL ${fileToSync.url}: status=${getBlobRes.status}`);
+            }
+          } catch (syncErr) {
+            console.warn(`Failed to upload attachment ${fileToSync.fileName} to Google Drive:`, syncErr);
+          }
         }
 
         // Step 4: Smart Overwrite or Append Note Row to 'Notebox Master Log'
@@ -2700,6 +2906,8 @@ function getActiveRowMedia() {
       const syncGdriveBtn = document.getElementById("sync-gdrive-btn");
       const resyncBtn = document.getElementById("resync-all-btn");
       const sheetsCompanionBtn = document.getElementById("open-sheets-companion-btn");
+      const openSheetsBtn = document.getElementById("open-google-sheet-btn");
+      const sheetId = localStorage.getItem("google_drive_spreadsheet_id");
       
       if (!syncStatusDot || !syncStatusText || !syncStatusDesc || !syncGdriveBtn) return;
       
@@ -2716,6 +2924,15 @@ function getActiveRowMedia() {
         syncGdriveBtn.classList.add("btn-secondary");
         if (resyncBtn) resyncBtn.style.display = "none";
         if (sheetsCompanionBtn) sheetsCompanionBtn.style.display = "inline-flex";
+        
+        if (openSheetsBtn) {
+          if (sheetId && sheetId !== "undefined") {
+            openSheetsBtn.href = `https://docs.google.com/spreadsheets/d/${sheetId}/edit`;
+            openSheetsBtn.style.display = "inline-flex";
+          } else {
+            openSheetsBtn.style.display = "none";
+          }
+        }
       } else {
         localStorage.removeItem("google_drive_token");
         localStorage.removeItem("google_drive_token_expires");
@@ -2730,6 +2947,7 @@ function getActiveRowMedia() {
         syncGdriveBtn.classList.add("btn-primary");
         if (resyncBtn) resyncBtn.style.display = "none";
         if (sheetsCompanionBtn) sheetsCompanionBtn.style.display = "none";
+        if (openSheetsBtn) openSheetsBtn.style.display = "none";
       }
     }
 
@@ -3025,6 +3243,206 @@ function getActiveRowMedia() {
         const realSheetId = metaData.sheets[0].properties.sheetId;
         console.log("Formatting dynamically resolved sheet ID:", realSheetId);
 
+        const spreadsheetProperties = metaData.properties || {};
+        const externalAccessAllowed = spreadsheetProperties.importFunctionsExternalUrlAccessAllowed === true;
+
+        const requests = [];
+        if (!externalAccessAllowed) {
+          console.log("Enabling external URL access (e.g. `=IMAGE`) on the sheet properties...");
+          requests.push({
+            updateSpreadsheetProperties: {
+              properties: {
+                importFunctionsExternalUrlAccessAllowed: true
+              },
+              fields: "importFunctionsExternalUrlAccessAllowed"
+            }
+          });
+        }
+
+        requests.push(
+          {
+            updateSheetProperties: {
+              properties: {
+                sheetId: realSheetId,
+                gridProperties: {
+                  frozenRowCount: 1
+                }
+              },
+              fields: "gridProperties.frozenRowCount"
+            }
+          },
+          {
+            repeatCell: {
+              range: {
+                sheetId: realSheetId,
+                startRowIndex: 0,
+                endRowIndex: 1,
+                startColumnIndex: 0,
+                endColumnIndex: 7
+              },
+              cell: {
+                userEnteredFormat: {
+                  backgroundColor: {
+                    red: 0.043,
+                    green: 0.059,
+                    blue: 0.098
+                  },
+                  textFormat: {
+                    foregroundColor: {
+                      red: 1.0,
+                      green: 1.0,
+                      blue: 1.0
+                    },
+                    bold: true,
+                    fontSize: 11,
+                    fontFamily: "Arial"
+                  },
+                  horizontalAlignment: "CENTER",
+                  verticalAlignment: "MIDDLE"
+                }
+              },
+              fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
+            }
+          },
+          {
+            repeatCell: {
+              range: {
+                sheetId: realSheetId,
+                startRowIndex: 1,
+                endRowIndex: 1000,
+                startColumnIndex: 0,
+                endColumnIndex: 3
+              },
+              cell: {
+                userEnteredFormat: {
+                  textFormat: { fontFamily: "Arial", fontSize: 10 },
+                  horizontalAlignment: "CENTER",
+                  verticalAlignment: "MIDDLE",
+                  wrapStrategy: "WRAP"
+                }
+              },
+              fields: "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)"
+            }
+          },
+          {
+            repeatCell: {
+              range: {
+                sheetId: realSheetId,
+                startRowIndex: 1,
+                endRowIndex: 1000,
+                startColumnIndex: 3,
+                endColumnIndex: 4
+              },
+              cell: {
+                userEnteredFormat: {
+                  textFormat: { fontFamily: "Arial", fontSize: 10 },
+                  horizontalAlignment: "LEFT",
+                  verticalAlignment: "MIDDLE",
+                  wrapStrategy: "WRAP"
+                }
+              },
+              fields: "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)"
+            }
+          },
+          {
+            repeatCell: {
+              range: {
+                sheetId: realSheetId,
+                startRowIndex: 1,
+                endRowIndex: 1000,
+                startColumnIndex: 4,
+                endColumnIndex: 7
+              },
+              cell: {
+                userEnteredFormat: {
+                  textFormat: { fontFamily: "Arial", fontSize: 10 },
+                  horizontalAlignment: "CENTER",
+                  verticalAlignment: "MIDDLE",
+                  wrapStrategy: "WRAP"
+                }
+              },
+              fields: "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: {
+                sheetId: realSheetId,
+                dimension: "ROWS",
+                startIndex: 0,
+                endIndex: 1
+              },
+              properties: {
+                pixelSize: 44
+              },
+              fields: "pixelSize"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: {
+                sheetId: realSheetId,
+                dimension: "ROWS",
+                startIndex: 1,
+                endIndex: 1000
+              },
+              properties: {
+                pixelSize: 60
+              },
+              fields: "pixelSize"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 },
+              properties: { pixelSize: 150 },
+              fields: "pixelSize"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 },
+              properties: { pixelSize: 120 },
+              fields: "pixelSize"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 2, endIndex: 3 },
+              properties: { pixelSize: 160 },
+              fields: "pixelSize"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 },
+              properties: { pixelSize: 420 },
+              fields: "pixelSize"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 4, endIndex: 5 },
+              properties: { pixelSize: 130 },
+              fields: "pixelSize"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 5, endIndex: 6 },
+              properties: { pixelSize: 180 },
+              fields: "pixelSize"
+            }
+          },
+          {
+            updateDimensionProperties: {
+              range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 6, endIndex: 7 },
+              properties: { pixelSize: 150 },
+              fields: "pixelSize"
+            }
+          }
+        );
+
         const response = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
           method: "POST",
           headers: {
@@ -3032,189 +3450,7 @@ function getActiveRowMedia() {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            requests: [
-              {
-                updateSheetProperties: {
-                  properties: {
-                    sheetId: realSheetId,
-                    gridProperties: {
-                      frozenRowCount: 1
-                    }
-                  },
-                  fields: "gridProperties.frozenRowCount"
-                }
-              },
-              {
-                repeatCell: {
-                  range: {
-                    sheetId: realSheetId,
-                    startRowIndex: 0,
-                    endRowIndex: 1,
-                    startColumnIndex: 0,
-                    endColumnIndex: 7
-                  },
-                  cell: {
-                    userEnteredFormat: {
-                      backgroundColor: {
-                        red: 0.043,
-                        green: 0.059,
-                        blue: 0.098
-                      },
-                      textFormat: {
-                        foregroundColor: {
-                          red: 1.0,
-                          green: 1.0,
-                          blue: 1.0
-                        },
-                        bold: true,
-                        fontSize: 11,
-                        fontFamily: "Arial"
-                      },
-                      horizontalAlignment: "CENTER",
-                      verticalAlignment: "MIDDLE"
-                    }
-                  },
-                  fields: "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)"
-                }
-              },
-              {
-                repeatCell: {
-                  range: {
-                    sheetId: realSheetId,
-                    startRowIndex: 1,
-                    endRowIndex: 1000,
-                    startColumnIndex: 0,
-                    endColumnIndex: 3
-                  },
-                  cell: {
-                    userEnteredFormat: {
-                      textFormat: { fontFamily: "Arial", fontSize: 10 },
-                      horizontalAlignment: "CENTER",
-                      verticalAlignment: "MIDDLE",
-                      wrapStrategy: "WRAP"
-                    }
-                  },
-                  fields: "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)"
-                }
-              },
-              {
-                repeatCell: {
-                  range: {
-                    sheetId: realSheetId,
-                    startRowIndex: 1,
-                    endRowIndex: 1000,
-                    startColumnIndex: 3,
-                    endColumnIndex: 4
-                  },
-                  cell: {
-                    userEnteredFormat: {
-                      textFormat: { fontFamily: "Arial", fontSize: 10 },
-                      horizontalAlignment: "LEFT",
-                      verticalAlignment: "MIDDLE",
-                      wrapStrategy: "WRAP"
-                    }
-                  },
-                  fields: "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)"
-                }
-              },
-              {
-                repeatCell: {
-                  range: {
-                    sheetId: realSheetId,
-                    startRowIndex: 1,
-                    endRowIndex: 1000,
-                    startColumnIndex: 4,
-                    endColumnIndex: 7
-                  },
-                  cell: {
-                    userEnteredFormat: {
-                      textFormat: { fontFamily: "Arial", fontSize: 10 },
-                      horizontalAlignment: "CENTER",
-                      verticalAlignment: "MIDDLE",
-                      wrapStrategy: "WRAP"
-                    }
-                  },
-                  fields: "userEnteredFormat(textFormat,horizontalAlignment,verticalAlignment,wrapStrategy)"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: {
-                    sheetId: realSheetId,
-                    dimension: "ROWS",
-                    startIndex: 0,
-                    endIndex: 1
-                  },
-                  properties: {
-                    pixelSize: 44
-                  },
-                  fields: "pixelSize"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: {
-                    sheetId: realSheetId,
-                    dimension: "ROWS",
-                    startIndex: 1,
-                    endIndex: 1000
-                  },
-                  properties: {
-                    pixelSize: 60
-                  },
-                  fields: "pixelSize"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 0, endIndex: 1 },
-                  properties: { pixelSize: 150 },
-                  fields: "pixelSize"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 1, endIndex: 2 },
-                  properties: { pixelSize: 120 },
-                  fields: "pixelSize"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 2, endIndex: 3 },
-                  properties: { pixelSize: 160 },
-                  fields: "pixelSize"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 3, endIndex: 4 },
-                  properties: { pixelSize: 420 },
-                  fields: "pixelSize"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 4, endIndex: 5 },
-                  properties: { pixelSize: 130 },
-                  fields: "pixelSize"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 5, endIndex: 6 },
-                  properties: { pixelSize: 180 },
-                  fields: "pixelSize"
-                }
-              },
-              {
-                updateDimensionProperties: {
-                  range: { sheetId: realSheetId, dimension: "COLUMNS", startIndex: 6, endIndex: 7 },
-                  properties: { pixelSize: 150 },
-                  fields: "pixelSize"
-                }
-              }
-            ]
+            requests: requests
           })
         });
         if (response.ok) {
@@ -3357,12 +3593,12 @@ function getActiveRowMedia() {
           <div style="width: 100%; padding: 2.5rem; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; background: rgba(255,255,255,0.02);">
             <!-- Sleek Voice Visualization Placeholder -->
             <div style="display: flex; align-items: center; gap: 0.25rem; height: 40px; justify-content: center; width: 100%;">
-              <div class="voice-bar" style="width: 4px; height: 12px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate;"></div>
-              <div class="voice-bar" style="width: 4px; height: 28px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.1s;"></div>
-              <div class="voice-bar" style="width: 4px; height: 38px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.2s;"></div>
-              <div class="voice-bar" style="width: 4px; height: 20px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.3s;"></div>
-              <div class="voice-bar" style="width: 4px; height: 32px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.4s;"></div>
-              <div class="voice-bar" style="width: 4px; height: 16px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.5s;"></div>
+              <div class="voice-bar" style="width: 4px; height: 12px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 28px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.1s; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 38px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.2s; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 20px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.3s; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 32px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.4s; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 16px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.5s; animation-play-state: paused;"></div>
             </div>
             
             <audio id="preview-audio-player" controls autoplay src="${url}" style="width: 100%; border-radius: 30px;"></audio>
@@ -3388,6 +3624,27 @@ function getActiveRowMedia() {
           `;
           document.head.appendChild(style);
         }
+
+        setTimeout(() => {
+          const player = document.getElementById("preview-audio-player");
+          const bars = bodyEl.querySelectorAll(".voice-bar");
+          if (player && bars.length > 0) {
+            player.addEventListener("play", () => {
+              bars.forEach(bar => bar.style.animationPlayState = "running");
+            });
+            player.addEventListener("pause", () => {
+              bars.forEach(bar => bar.style.animationPlayState = "paused");
+            });
+            player.addEventListener("ended", () => {
+              bars.forEach(bar => bar.style.animationPlayState = "paused");
+            });
+            if (player.paused) {
+              bars.forEach(bar => bar.style.animationPlayState = "paused");
+            } else {
+              bars.forEach(bar => bar.style.animationPlayState = "running");
+            }
+          }
+        }, 0);
       } else {
         badgeEl.style.color = "var(--color-text-muted)";
         badgeEl.style.borderColor = "var(--border-card)";
@@ -3460,12 +3717,12 @@ function getActiveRowMedia() {
           <div style="width: 100%; padding: 2.5rem; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; background: rgba(255,255,255,0.02);">
             <!-- Sleek Voice Visualization -->
             <div style="display: flex; align-items: center; gap: 0.25rem; height: 40px; justify-content: center; width: 100%;">
-              <div class="voice-bar" style="width: 4px; height: 12px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate;"></div>
-              <div class="voice-bar" style="width: 4px; height: 28px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.1s;"></div>
-              <div class="voice-bar" style="width: 4px; height: 38px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.2s;"></div>
-              <div class="voice-bar" style="width: 4px; height: 20px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.3s;"></div>
-              <div class="voice-bar" style="width: 4px; height: 32px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.4s;"></div>
-              <div class="voice-bar" style="width: 4px; height: 16px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.5s;"></div>
+              <div class="voice-bar" style="width: 4px; height: 12px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 28px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.1s; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 38px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.2s; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 20px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.3s; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 32px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.4s; animation-play-state: paused;"></div>
+              <div class="voice-bar" style="width: 4px; height: 16px; background: var(--color-accent); border-radius: 2px; animation: bounce 0.8s ease-in-out infinite alternate 0.5s; animation-play-state: paused;"></div>
             </div>
             
             <audio id="ext-audio-player" controls autoplay src="${url}" style="width: 100%; border-radius: 30px;"></audio>
@@ -3491,6 +3748,27 @@ function getActiveRowMedia() {
           `;
           document.head.appendChild(style);
         }
+
+        setTimeout(() => {
+          const player = document.getElementById("ext-audio-player");
+          const bars = bodyEl.querySelectorAll(".voice-bar");
+          if (player && bars.length > 0) {
+            player.addEventListener("play", () => {
+              bars.forEach(bar => bar.style.animationPlayState = "running");
+            });
+            player.addEventListener("pause", () => {
+              bars.forEach(bar => bar.style.animationPlayState = "paused");
+            });
+            player.addEventListener("ended", () => {
+              bars.forEach(bar => bar.style.animationPlayState = "paused");
+            });
+            if (player.paused) {
+              bars.forEach(bar => bar.style.animationPlayState = "paused");
+            } else {
+              bars.forEach(bar => bar.style.animationPlayState = "running");
+            }
+          }
+        }, 0);
       } else {
         bodyEl.innerHTML = `
           <div style="text-align: center; padding: 3rem 1.5rem; display: flex; flex-direction: column; align-items: center; gap: 1rem;">
