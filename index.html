@@ -3518,9 +3518,13 @@ function getActiveRowMedia() {
       }
       const previewTitle = urlParams.get("title") || "Shared Attachment";
       
-      window.addEventListener("DOMContentLoaded", () => {
+      if (document.readyState === "loading") {
+        window.addEventListener("DOMContentLoaded", () => {
+          showExternalPreviewPage(previewUrl, previewType, previewTitle);
+        });
+      } else {
         showExternalPreviewPage(previewUrl, previewType, previewTitle);
-      });
+      }
     }
   </script>
 </body>
