@@ -248,17 +248,18 @@ bot.on('message', async (msg) => {
       try {
         const existingNotes = await db.collection('notes')
           .where('uid', '==', uid)
-          .orderBy('noteNumber', 'desc')
-          .limit(1)
           .get();
-        if (!existingNotes.empty) {
-          const lastNote = existingNotes.docs[0].data();
-          if (lastNote.noteNumber) {
-            nextNum = lastNote.noteNumber + 1;
+        
+        let maxNum = 0;
+        existingNotes.forEach(doc => {
+          const data = doc.data();
+          if (data.noteNumber && data.noteNumber > maxNum) {
+            maxNum = data.noteNumber;
           }
-        }
+        });
+        nextNum = maxNum + 1;
       } catch (err) {
-        console.warn("Could not query max noteNumber in bot, defaulting to 1:", err);
+        console.warn("Could not calculate max noteNumber in-memory inside bot, defaulting to 1:", err);
       }
       
       // Write draft note to Firestore
