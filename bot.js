@@ -321,6 +321,7 @@ bot.on('message', async (msg) => {
 // Helper: Process and Upload Attachments
 async function processAttachment(msg, chatId) {
   const session = activeSessions.get(chatId);
+  console.log(`[processAttachment] Processing attachment for chatId ${chatId}, session:`, session);
   bot.sendChatAction(chatId, 'upload_document');
   
   let fileId = "";
@@ -347,12 +348,18 @@ async function processAttachment(msg, chatId) {
     fileType = "voice";
   }
   
+  console.log(`[processAttachment] Fetching file path from Telegram for fileId: ${fileId}`);
   const fileInfo = await bot.getFile(fileId);
+  console.log(`[processAttachment] Telegram file path resolved: ${fileInfo.file_path}`);
   const downloadUrl = `https://api.telegram.org/file/bot${token}/${fileInfo.file_path}`;
+  
+  console.log(`[processAttachment] Downloading file from URL: ${downloadUrl}`);
   const response = await axios.get(downloadUrl, { responseType: 'arraybuffer' });
   const buffer = Buffer.from(response.data);
   
+  console.log(`[processAttachment] Uploading buffer of size ${buffer.length} to Firebase Storage: ${originalName}`);
   const uploadInfo = await uploadBufferToStorage(buffer, session.uid, `${timestamp}_${originalName}`, response.headers['content-type'] || 'application/octet-stream');
+  console.log(`[processAttachment] Firebase Storage upload successful. publicUrl: ${uploadInfo.publicUrl}`);
   
   const attachment = {
     name: originalName,
@@ -362,12 +369,14 @@ async function processAttachment(msg, chatId) {
   };
   
   // Update Firestore note attachments array
+  console.log(`[processAttachment] Adding attachment to Firestore noteId: ${session.noteId}`);
   const noteRef = db.collection('notes').doc(session.noteId);
   await noteRef.update({
     attachments: admin.firestore.FieldValue.arrayUnion(attachment)
   });
   
   session.attachmentsCount += 1;
+  console.log(`[processAttachment] Attachment successfully synced in Firestore. attachmentsCount is now ${session.attachmentsCount}`);
   
   bot.sendMessage(chatId, `📎 <b>Attachment Added!</b> (${session.attachmentsCount} total)\n<i>${escapeHTML(originalName)}</i>\n\nYou can keep sending files/photos to attach them, or finalize the note.`, {
     parse_mode: 'HTML',
