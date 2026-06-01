@@ -510,7 +510,7 @@ padding: 2rem;
 
     .notes-header-row {
       display: grid;
-      grid-template-columns: 140px 160px 1fr 130px 140px 120px;
+      grid-template-columns: 60px 140px 160px 1fr 130px 140px 120px;
       gap: 1.5rem;
       padding: 0.75rem 1.5rem;
       font-weight: 700;
@@ -529,7 +529,7 @@ padding: 2rem;
       padding: 1rem 1.5rem;
       transition: var(--transition-smooth);
       display: grid;
-      grid-template-columns: 140px 160px 1fr 130px 140px 120px;
+      grid-template-columns: 60px 140px 160px 1fr 130px 140px 120px;
       align-items: center;
       gap: 1.5rem;
       position: relative;
@@ -544,6 +544,20 @@ padding: 2rem;
     }
 
     /* Column Styles for spreadsheet-like alignment */
+    .note-col-number {
+      font-size: 0.85rem;
+      color: #fff;
+      font-weight: 700;
+      font-family: monospace;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 4px;
+      padding: 2px 6px;
+      width: fit-content;
+      text-align: center;
+      box-sizing: border-box;
+    }
+
     .note-col-date {
       font-size: 0.8rem;
       color: var(--color-text-muted);
@@ -1758,6 +1772,7 @@ function getActiveRowMedia() {
           notesContainer.innerHTML = `
             ${headerHTML}
             <div class="notes-header-row">
+              <div style="text-align: left;">#</div>
               <div>Date</div>
               <div>Title</div>
               <div>Note / Transcription</div>
@@ -1924,11 +1939,9 @@ function getActiveRowMedia() {
             }
 
             li.innerHTML = `
+              <div class="note-col-number">#${note.noteNumber || "-"}</div>
               <div class="note-col-date">${timestampFormatted}</div>
-              <div class="note-col-title" title="${escapeHTML(note.title || '')}">
-                ${note.noteNumber ? `<span class="note-num-badge" style="background: rgba(255,255,255,0.05); color: #fff; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; margin-right: 0.4rem; border: 1px solid rgba(255,255,255,0.08); font-family: monospace;">#${note.noteNumber}</span>` : ""}
-                ${escapeHTML(note.title || 'Untitled Note')}
-              </div>
+              <div class="note-col-title" title="${escapeHTML(note.title || '')}">${escapeHTML(note.title || 'Untitled Note')}</div>
               <div class="note-col-content" title="${escapeHTML(note.content || '')}">
                 ${escapeHTML(note.content || "")}
               </div>
