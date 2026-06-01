@@ -2701,6 +2701,9 @@ function getActiveRowMedia() {
         
         // Trigger Sheets-to-Firestore deletion mirroring check
         syncDeletedRowsFromGoogleSheet();
+        
+        // Silently backfill/sync all published active notes on load/initialization
+        backfillAllNotesToDrive();
       } catch (err) {
         console.error("Google Drive Initialization Error:", err);
       }
@@ -2730,7 +2733,7 @@ function getActiveRowMedia() {
         syncGdriveBtn.innerText = "Reconnect Drive";
         syncGdriveBtn.classList.remove("btn-primary");
         syncGdriveBtn.classList.add("btn-secondary");
-        if (resyncBtn) resyncBtn.style.display = "inline-flex";
+        if (resyncBtn) resyncBtn.style.display = "none";
         if (sheetsCompanionBtn) sheetsCompanionBtn.style.display = "inline-flex";
       } else {
         localStorage.removeItem("google_drive_token");
@@ -2772,11 +2775,11 @@ function getActiveRowMedia() {
             localStorage.removeItem("google_drive_folder_id");
             updateSyncStatusUI();
             
-            initializeGoogleDrive().then(() => {
-              // Proactively trigger sync on any unpublished/unsynced files
-              triggerUnsyncedNotesSync();
-              alert("Success: Google Drive is now paired! All finalized notes will automatically mirror to your 'Notebox' folder.");
-            });
+             initializeGoogleDrive().then(() => {
+               // Proactively trigger silent backfill/resync of all active published notes
+               backfillAllNotesToDrive();
+               alert("Success: Google Drive is now paired! All your notes are synchronizing to your Google Sheet Master Log.");
+             });
           }
         })
         .catch(error => {
@@ -2804,6 +2807,54 @@ function getActiveRowMedia() {
         .catch(err => {
           console.error("Failed to fetch unsynced notes:", err);
         });
+    }
+
+    async function backfillAllNotesToDrive() {
+      const user = auth.currentUser;
+      if (!user) return;
+
+      const token = localStorage.getItem("google_drive_token");
+      if (!token) return;
+
+      try {
+        console.log("Automatically backfilling all notes to Google Drive / Sheet...");
+        const snapshot = await db.collection("notes")
+          .where("uid", "==", user.uid)
+          .where("status", "==", "published")
+          .get();
+
+        if (snapshot.empty) {
+          console.log("No published notes found to backfill.");
+          return;
+        }
+
+        const docs = [];
+        snapshot.forEach(doc => {
+          const note = doc.data();
+          if (note.trash !== true) { // don't sync trashed notes
+            docs.push(doc);
+          }
+        });
+
+        // Sort ascending by creation time to append them in chronological order
+        docs.sort((a, b) => {
+          const t1 = a.data().createdAt ? a.data().createdAt.toMillis() : 0;
+          const t2 = b.data().createdAt ? b.data().createdAt.toMillis() : 0;
+          return t1 - t2;
+        });
+
+        for (const doc of docs) {
+          try {
+            const noteData = doc.data();
+            await syncNoteToGoogleDrive(doc.id, noteData);
+          } catch (syncErr) {
+            console.error(`Error backfilling note ${doc.id}:`, syncErr);
+          }
+        }
+        console.log(`Successfully backfilled ${docs.length} notes to Google Sheet.`);
+      } catch (err) {
+        console.error("Auto-backfill Error:", err);
+      }
     }
 
     // Connect Link Google Drive Action
