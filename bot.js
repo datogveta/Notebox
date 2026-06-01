@@ -426,8 +426,11 @@ async function uploadBufferToStorage(buffer, uid, fileName, contentType) {
     public: true
   });
   
+  const encodedPath = encodeURIComponent(filePath);
+  const firebasePublicUrl = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodedPath}?alt=media`;
+  
   return {
-    publicUrl: `https://storage.googleapis.com/${bucket.name}/${filePath}`,
+    publicUrl: firebasePublicUrl,
     storagePath: filePath
   };
 }
