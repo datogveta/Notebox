@@ -785,7 +785,10 @@ padding: 2rem;
     <div class="sidebar">
       <div class="sidebar-section">
         <h3>Actions</h3>
-        <button id="add-new-note-btn" class="btn btn-primary">Add New Note</button>
+        <button id="add-new-note-btn" class="btn btn-primary" style="margin-bottom: 0.5rem;">Add New Note</button>
+        <button id="view-recycling-bin-btn" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.4rem;">
+          🗑️ View Recycling Bin
+        </button>
       </div>
       
       <div class="sidebar-section">
@@ -845,7 +848,7 @@ padding: 2rem;
     
     <div class="main-panel">
       <div class="dashboard-header">
-        <h2>Your Forwarded Notes</h2>
+        <h2 id="dashboard-view-title">Your Forwarded Notes</h2>
       </div>
       <div id="notes-list-container">
         <!-- Rendered Notes Grid or Empty State -->
@@ -1495,6 +1498,26 @@ function getActiveRowMedia() {
         });
     });
     
+    const viewRecyclingBinBtn = document.getElementById("view-recycling-bin-btn");
+    viewRecyclingBinBtn.addEventListener("click", () => {
+      const viewTitle = document.getElementById("dashboard-view-title");
+      if (currentView === "active") {
+        currentView = "trash";
+        viewRecyclingBinBtn.innerHTML = "📋 View Active Notes";
+        viewRecyclingBinBtn.className = "btn btn-primary";
+        if (viewTitle) viewTitle.innerText = "Recycling Bin (Trash)";
+      } else {
+        currentView = "active";
+        viewRecyclingBinBtn.innerHTML = "🗑️ View Recycling Bin";
+        viewRecyclingBinBtn.className = "btn btn-secondary";
+        if (viewTitle) viewTitle.innerText = "Your Forwarded Notes";
+      }
+      const user = auth.currentUser;
+      if (user) {
+        loadNotes(user.uid);
+      }
+    });
+
     /******** Note Modal & CRUD Handlers ********/
     addNewNoteBtn.addEventListener("click", () => {
       noteModal.style.display = "flex";
@@ -1641,7 +1664,6 @@ function getActiveRowMedia() {
         });
 
         document.getElementById("edit-note-modal").style.display = "none";
-      } catch (error) {
         console.error("Edit Note Error:", error);
         alert("Could not update note: " + error.message);
       } finally {
@@ -1650,19 +1672,40 @@ function getActiveRowMedia() {
       }
     });
     
+    let currentView = "active";
+    
     // Load Notes in Real-Time
     function loadNotes(uid) {
       db.collection("notes")
         .where("uid", "==", uid)
         .orderBy("createdAt", "desc")
         .onSnapshot(snapshot => {
-          if (snapshot.empty) {
-            notesContainer.innerHTML = `
-              <div class="empty-state">
-                <p>No notes forwarded yet. Connect your Telegram Bot to start syncing automatically.</p>
-                <button onclick="document.getElementById('note-modal').style.display='flex'" class="btn btn-secondary" style="width:auto;">Create First Note Manually</button>
-              </div>
-            `;
+          const filteredDocs = [];
+          snapshot.forEach(doc => {
+            const note = doc.data();
+            const isTrash = note.trash === true;
+            if (currentView === "active" && !isTrash) {
+              filteredDocs.push(doc);
+            } else if (currentView === "trash" && isTrash) {
+              filteredDocs.push(doc);
+            }
+          });
+
+          if (filteredDocs.length === 0) {
+            if (currentView === "trash") {
+              notesContainer.innerHTML = `
+                <div class="empty-state">
+                  <p>Your Recycling Bin is empty.</p>
+                </div>
+              `;
+            } else {
+              notesContainer.innerHTML = `
+                <div class="empty-state">
+                  <p>No notes forwarded yet. Connect your Telegram Bot to start syncing automatically.</p>
+                  <button onclick="document.getElementById('note-modal').style.display='flex'" class="btn btn-secondary" style="width:auto;">Create First Note Manually</button>
+                </div>
+              `;
+            }
             return;
           }
           
@@ -1681,7 +1724,7 @@ function getActiveRowMedia() {
           
           const activeNotesList = document.getElementById("notes-list");
           
-          snapshot.forEach(doc => {
+          filteredDocs.forEach(doc => {
             const note = doc.data();
             const li = document.createElement("li");
             li.className = "note-card";
@@ -1848,11 +1891,30 @@ function getActiveRowMedia() {
               </div>
               <div class="note-col-sync" style="display: flex; align-items: center; justify-content: flex-end; gap: 0.5rem; width: 100%;">
                 ${syncBadgeHTML}
-                <button onclick="event.stopPropagation(); openEditNoteModal('${doc.id}')" class="btn btn-secondary" style="width:30px; height:30px; padding:0; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; border-color: rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: var(--color-text-muted);" title="Edit Note">
-                  <svg style="width:14px; height:14px;" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
-                  </svg>
-                </button>
+                
+                ${currentView === "active" ? `
+                  <button onclick="event.stopPropagation(); openEditNoteModal('${doc.id}')" class="btn btn-secondary" style="width:30px; height:30px; padding:0; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; border-color: rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); color: var(--color-text-muted);" title="Edit Note">
+                    <svg style="width:14px; height:14px;" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/>
+                    </svg>
+                  </button>
+                  <button onclick="event.stopPropagation(); moveNoteToTrash('${doc.id}')" class="btn btn-secondary" style="width:30px; height:30px; padding:0; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; border-color: rgba(239, 68, 68, 0.2); background: rgba(239, 68, 68, 0.05); color: #ef4444;" title="Move to Recycling Bin">
+                    <svg style="width:14px; height:14px;" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/>
+                    </svg>
+                  </button>
+                ` : `
+                  <button onclick="event.stopPropagation(); restoreNoteFromTrash('${doc.id}')" class="btn btn-secondary" style="width:30px; height:30px; padding:0; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; border-color: rgba(16, 185, 129, 0.2); background: rgba(16, 185, 129, 0.05); color: var(--color-success);" title="Restore Note">
+                    <svg style="width:14px; height:14px;" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M14 12c0-1.1-.9-2-2-2s-2 .9-2 2 .9 2 2 2 2-.9 2-2zm-2-9c-4.97 0-9 4.03-9 9H0l4 4 4-4H5c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.91 0-3.64-.76-4.9-2l-1.42 1.42C7.46 20.1 9.61 21 12 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z"/>
+                    </svg>
+                  </button>
+                  <button onclick="event.stopPropagation(); deleteNoteForever('${doc.id}')" class="btn btn-secondary" style="width:30px; height:30px; padding:0; display:inline-flex; align-items:center; justify-content:center; border-radius:6px; border-color: rgba(239, 68, 68, 0.3); background: rgba(239, 68, 68, 0.1); color: #ef4444;" title="Delete Forever">
+                    <svg style="width:14px; height:14px;" viewBox="0 0 24 24" fill="currentColor">
+                      <path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4zM9 9h2v10H9V9zm4 0h2v10h-2V9z"/>
+                    </svg>
+                  </button>
+                `}
               </div>
             `;
             activeNotesList.appendChild(li);
@@ -1876,6 +1938,42 @@ function getActiveRowMedia() {
         }[tag] || tag)
       );
     }
+
+    // Window-scoped Note Trash / Restore / Delete Handlers
+    window.moveNoteToTrash = async function(noteId) {
+      try {
+        await db.collection("notes").doc(noteId).update({
+          trash: true,
+          driveSynced: false // trigger deletion in Google Sheet
+        });
+      } catch (error) {
+        console.error("Error moving note to trash:", error);
+        alert("Failed to move note to recycling bin: " + error.message);
+      }
+    };
+
+    window.restoreNoteFromTrash = async function(noteId) {
+      try {
+        await db.collection("notes").doc(noteId).update({
+          trash: false,
+          driveSynced: false // trigger re-append to Google Sheet
+        });
+      } catch (error) {
+        console.error("Error restoring note:", error);
+        alert("Failed to restore note: " + error.message);
+      }
+    };
+
+    window.deleteNoteForever = async function(noteId) {
+      if (confirm("Are you sure you want to permanently delete this note? This action cannot be undone.")) {
+        try {
+          await db.collection("notes").doc(noteId).delete();
+        } catch (error) {
+          console.error("Error deleting note forever:", error);
+          alert("Failed to delete note: " + error.message);
+        }
+      }
+    };
     
     // Real-Time Google Drive Sync Engine (Individual Files + Master Google Sheet Logger)
     const inProgressSyncs = new Set();
@@ -1891,6 +1989,106 @@ function getActiveRowMedia() {
       inProgressSyncs.add(noteId);
 
       try {
+        if (note.trash === true) {
+          console.log(`Note ${noteId} is marked as trash. Removing from Google Sheets and Google Drive...`);
+          // Step 1: Find spreadsheet ID
+          let spreadsheetId = localStorage.getItem("google_drive_spreadsheet_id");
+          if (spreadsheetId) {
+            // Resolve numericSheetId and realSheetTitle
+            let realSheetTitle = "Sheet1";
+            let numericSheetId = 0;
+            try {
+              const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`, {
+                headers: { "Authorization": `Bearer ${token}` }
+              });
+              if (metaRes.ok) {
+                const metaData = await metaRes.json();
+                if (metaData.sheets && metaData.sheets.length > 0) {
+                  realSheetTitle = metaData.sheets[0].properties.title;
+                  numericSheetId = metaData.sheets[0].properties.sheetId || 0;
+                }
+              }
+            } catch (err) {
+              console.warn("Could not resolve spreadsheet metadata:", err);
+            }
+
+            // Search Column B for this noteId
+            let existingRowIndex = -1;
+            try {
+              const checkIdRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(realSheetTitle)}!B:B`, {
+                headers: { "Authorization": `Bearer ${token}` }
+              });
+              if (checkIdRes.ok) {
+                const checkIdData = await checkIdRes.json();
+                if (checkIdData.values && checkIdData.values.length > 0) {
+                  for (let i = 0; i < checkIdData.values.length; i++) {
+                    if (checkIdData.values[i] && checkIdData.values[i][0] === noteId) {
+                      existingRowIndex = i + 1; // 1-indexed row number in Google Sheets
+                      break;
+                    }
+                  }
+                }
+              }
+            } catch (checkErr) {
+              console.warn("Could not query sheet for delete:", checkErr);
+            }
+
+            if (existingRowIndex !== -1) {
+              console.log(`Deleting row ${existingRowIndex} for note ${noteId} from Google Sheets...`);
+              const deleteRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+                method: "POST",
+                headers: {
+                  "Authorization": `Bearer ${token}`,
+                  "Content-Type": "application/json"
+                },
+                body: JSON.stringify({
+                  requests: [
+                    {
+                      deleteDimension: {
+                        range: {
+                          sheetId: numericSheetId,
+                          dimension: "ROWS",
+                          startIndex: existingRowIndex - 1,
+                          endIndex: existingRowIndex
+                        }
+                      }
+                    }
+                  ]
+                })
+              });
+              if (deleteRes.ok) {
+                console.log(`Successfully deleted row ${existingRowIndex} from Google Sheet.`);
+              } else {
+                console.error("Failed to delete row from Google Sheet:", await deleteRes.text());
+              }
+            }
+          }
+
+          // Step 2: Delete individual text file from Google Drive if driveFileId exists
+          if (note.driveFileId && note.driveFileId !== spreadsheetId) {
+            try {
+              console.log(`Deleting file ${note.driveFileId} from Google Drive...`);
+              const fileDeleteRes = await fetch(`https://www.googleapis.com/drive/v3/files/${note.driveFileId}`, {
+                method: "DELETE",
+                headers: { "Authorization": `Bearer ${token}` }
+              });
+              if (fileDeleteRes.ok) {
+                console.log(`Successfully deleted file ${note.driveFileId} from Google Drive.`);
+              } else {
+                console.warn("Failed to delete file from Google Drive:", await fileDeleteRes.text());
+              }
+            } catch (fileErr) {
+              console.error("Error deleting file from Google Drive:", fileErr);
+            }
+          }
+
+          // Update Firestore so we don't try to sync this again
+          await db.collection("notes").doc(noteId).update({
+            driveSynced: true
+          });
+
+          return; // Exit early since delete is fully synced!
+        }
         // Step 1: Find or Create the 'Notebox' directory in Google Drive
         let folderId = localStorage.getItem("google_drive_folder_id");
         if (!folderId || folderId === "undefined") {
@@ -2242,6 +2440,82 @@ function getActiveRowMedia() {
       }
     }
 
+    async function syncDeletedRowsFromGoogleSheet() {
+      const token = localStorage.getItem("google_drive_token");
+      if (!token) return;
+
+      const user = auth.currentUser;
+      if (!user) return;
+
+      try {
+        const sheetId = localStorage.getItem("google_drive_spreadsheet_id");
+        if (!sheetId || sheetId === "undefined") return;
+
+        // Resolve sheet title
+        let realSheetTitle = "Sheet1";
+        const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`, {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
+        if (metaRes.ok) {
+          const metaData = await metaRes.json();
+          if (metaData.sheets && metaData.sheets.length > 0) {
+            realSheetTitle = metaData.sheets[0].properties.title;
+          }
+        }
+
+        // Fetch Column B (Note Reference IDs)
+        const checkIdRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(realSheetTitle)}!B:B`, {
+          headers: { "Authorization": `Bearer ${token}` }
+        });
+        if (!checkIdRes.ok) {
+          console.warn("Could not fetch sheet values for mirroring deletion check.");
+          return;
+        }
+
+        const checkIdData = await checkIdRes.json();
+        const sheetNoteIds = new Set();
+        if (checkIdData.values && checkIdData.values.length > 0) {
+          checkIdData.values.forEach(row => {
+            if (row && row[0]) {
+              sheetNoteIds.add(row[0].trim());
+            }
+          });
+        }
+
+        // Fetch all Firestore notes that are synced and active (trash !== true)
+        const firestoreSnapshot = await db.collection("notes")
+          .where("uid", "==", user.uid)
+          .where("driveSynced", "==", true)
+          .get();
+
+        const batch = db.batch();
+        let deletedCount = 0;
+
+        firestoreSnapshot.forEach(doc => {
+          const note = doc.data();
+          if (note.trash !== true) {
+            // If the note ID is missing from the Google Sheet, soft-delete it!
+            if (!sheetNoteIds.has(doc.id)) {
+              console.log(`Firestore note ${doc.id} is missing from Google Sheet. Syncing deletion (moving to recycling bin)...`);
+              const docRef = db.collection("notes").doc(doc.id);
+              batch.update(docRef, { 
+                trash: true,
+                driveSynced: true // Keep driveSynced true since it is already removed from drive
+              });
+              deletedCount++;
+            }
+          }
+        });
+
+        if (deletedCount > 0) {
+          await batch.commit();
+          console.log(`Google Sheets mirroring completed: soft-deleted ${deletedCount} notes in Firestore.`);
+        }
+      } catch (err) {
+        console.error("Error during Google Sheets deletion mirroring:", err);
+      }
+    }
+
     // Initialize Google Drive folder immediately and pre-configure the Master Spreadsheet
     async function initializeGoogleDrive() {
       const token = localStorage.getItem("google_drive_token");
@@ -2381,6 +2655,9 @@ function getActiveRowMedia() {
             }
           }
         }
+        
+        // Trigger Sheets-to-Firestore deletion mirroring check
+        syncDeletedRowsFromGoogleSheet();
       } catch (err) {
         console.error("Google Drive Initialization Error:", err);
       }

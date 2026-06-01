@@ -55,6 +55,14 @@ if (!token) {
 const bot = new TelegramBot(token, { polling: true });
 console.log("Notebox Interactive Bot Backend has started successfully...");
 
+// Polling and General Errors Handling
+bot.on('polling_error', (error) => {
+  console.error("[TELEGRAM POLLING ERROR]", error.code, error.message);
+});
+bot.on('error', (error) => {
+  console.error("[TELEGRAM GENERAL ERROR]", error);
+});
+
 // Memory Cache for Active Drafting Sessions
 // activeSessions[chatId] = { noteId, uid, title, content, attachmentsCount, timestamp }
 const activeSessions = new Map();
@@ -127,18 +135,22 @@ bot.on('callback_query', async (query) => {
     const noteId = data.replace('delete_', '');
     
     try {
-      // Remove from Firestore
-      await db.collection('notes').doc(noteId).delete();
+      console.log(`[BOT MESSAGE] Soft-deleting draft note via Telegram callback: noteId=${noteId}`);
+      // Move to Recycling Bin (soft-delete)
+      await db.collection('notes').doc(noteId).update({
+        trash: true,
+        driveSynced: false
+      });
       activeSessions.delete(chatId);
       
-      bot.editMessageText("🗑️ <b>Draft Note Deleted.</b>", {
+      bot.editMessageText("🗑️ <b>Draft Note Moved to Recycling Bin.</b>\nYou can restore it anytime from your web dashboard.", {
         chat_id: chatId,
         message_id: messageId,
         parse_mode: 'HTML'
       });
     } catch (e) {
       console.error("Failed to delete draft:", e);
-      bot.sendMessage(chatId, "⚠️ Failed to delete note. You can remove it manually from the website dashboard.");
+      bot.sendMessage(chatId, "⚠️ Failed to move note to recycling bin. You can remove it manually from the website dashboard.");
     }
   }
   
@@ -149,18 +161,32 @@ bot.on('callback_query', async (query) => {
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   
+  console.log(`[BOT MESSAGE] Received message from chatId ${chatId}:`, {
+    text: msg.text ? (msg.text.length > 50 ? msg.text.substring(0, 50) + "..." : msg.text) : null,
+    voice: !!msg.voice,
+    photo: !!msg.photo,
+    document: !!msg.document,
+    video: !!msg.video
+  });
+
   // Skip command messages
-  if (msg.text && msg.text.startsWith('/')) return;
+  if (msg.text && msg.text.startsWith('/')) {
+    console.log(`[BOT MESSAGE] Skipping command message: ${msg.text}`);
+    return;
+  }
   
   try {
     // 1. Check account connection
+    console.log(`[BOT MESSAGE] Checking pairing for chatId ${chatId} in Firestore...`);
     const userDoc = await db.collection('telegram_users').doc(String(chatId)).get();
     if (!userDoc.exists) {
+      console.log(`[BOT MESSAGE] ChatId ${chatId} is NOT paired in Firestore.`);
       bot.sendMessage(chatId, "🔒 <b>Account Pairing Required.</b>\nPlease link your Telegram account to Notebox first by logging into your web dashboard.", { parse_mode: 'HTML' });
       return;
     }
     
     const { uid } = userDoc.data();
+    console.log(`[BOT MESSAGE] Found paired user uid: ${uid}`);
     const hasSession = activeSessions.has(chatId);
     
     // CASE 1: USER IS CREATING A NEW DRAFT NOTE
@@ -230,6 +256,8 @@ bot.on('message', async (msg) => {
         source: 'telegram',
         isVoice: isVoice
       });
+      
+      console.log(`[BOT MESSAGE] Firestore draft note created successfully: noteId=${noteRef.id}`);
       
       // Set Active Session state
       activeSessions.set(chatId, {
