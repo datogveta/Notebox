@@ -2720,9 +2720,15 @@ function getActiveRowMedia() {
       provider.addScope('https://www.googleapis.com/auth/drive.file');
       provider.addScope('https://www.googleapis.com/auth/spreadsheets');
       
-      auth.signInWithPopup(provider)
+      const currentUser = auth.currentUser;
+      if (!currentUser) {
+        alert("Please log in to your account first.");
+        return;
+      }
+      
+      currentUser.linkWithPopup(provider)
         .then(result => {
-          console.log("Google Drive Authentication successful:", result.user);
+          console.log("Google Drive account linked successfully:", result.user);
           if (result.credential) {
             localStorage.setItem("google_drive_token", result.credential.accessToken);
             localStorage.setItem("google_drive_token_expires", String(Date.now() + 3500 * 1000));
@@ -2730,14 +2736,35 @@ function getActiveRowMedia() {
             localStorage.removeItem("google_drive_folder_id");
             updateSyncStatusUI();
             
-             initializeGoogleDrive().then(() => {
-               alert("Success: Google Drive is now paired! All your notes are synchronizing to your Google Sheet Master Log.");
-             });
+            initializeGoogleDrive().then(() => {
+              alert("Success: Google Drive is now paired! All your notes are synchronizing to your Google Sheet Master Log.");
+            });
           }
         })
         .catch(error => {
           console.error("Google Drive connection failed:", error);
-          alert("Could not connect Google Drive: " + error.message);
+          if (error.code === 'auth/credential-already-in-use') {
+            console.log("Credential already in use, falling back to signInWithPopup to retrieve token...");
+            auth.signInWithPopup(provider)
+              .then(res => {
+                if (res.credential) {
+                  localStorage.setItem("google_drive_token", res.credential.accessToken);
+                  localStorage.setItem("google_drive_token_expires", String(Date.now() + 3500 * 1000));
+                  // Force re-evaluation of folder
+                  localStorage.removeItem("google_drive_folder_id");
+                  updateSyncStatusUI();
+                  
+                  initializeGoogleDrive().then(() => {
+                    alert("Success: Google Drive is now paired! All your notes are synchronizing to your Google Sheet Master Log.");
+                  });
+                }
+              })
+              .catch(fallbackErr => {
+                alert("Could not connect Google Drive: " + fallbackErr.message);
+              });
+          } else {
+            alert("Could not connect Google Drive: " + error.message);
+          }
         });
     }
 
