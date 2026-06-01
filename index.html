@@ -2021,6 +2021,241 @@ function getActiveRowMedia() {
     // Real-Time Google Drive Sync Engine (Individual Files + Master Google Sheet Logger)
     const inProgressSyncs = new Set();
 
+    async function getOrValidateDriveAssets(token) {
+      try {
+        let folderId = localStorage.getItem("google_drive_folder_id");
+        let folderValid = false;
+
+        // 1. Validate Folder
+        if (folderId && folderId !== "undefined") {
+          try {
+            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${folderId}?fields=id,name,trashed`, {
+              headers: { "Authorization": `Bearer ${token}` }
+            });
+            if (res.status === 401) {
+              handleGoogleAuthExpired();
+              return null;
+            }
+            if (res.ok) {
+              const data = await res.json();
+              if (data.name === "Notebox" && !data.trashed) {
+                folderValid = true;
+              }
+            }
+          } catch (err) {
+            console.warn("Folder validation fetch failed:", err);
+          }
+        }
+
+        if (!folderValid) {
+          console.log("Folder invalid or missing. Searching or creating Notebox folder...");
+          localStorage.removeItem("google_drive_folder_id");
+          localStorage.removeItem("google_drive_spreadsheet_id");
+          folderId = null;
+
+          // Search
+          const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='Notebox' and mimeType='application/vnd.google-apps.folder' and trashed=false&fields=files(id)", {
+            headers: { "Authorization": `Bearer ${token}` }
+          });
+          if (searchRes.status === 401) {
+            handleGoogleAuthExpired();
+            return null;
+          }
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            if (searchData.files && searchData.files.length > 0) {
+              folderId = searchData.files[0].id;
+              console.log("Found existing 'Notebox' folder:", folderId);
+            }
+          }
+
+          // Create if not found
+          if (!folderId) {
+            console.log("Creating a brand new 'Notebox' folder...");
+            const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${token}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                name: "Notebox",
+                mimeType: "application/vnd.google-apps.folder"
+              })
+            });
+            if (createRes.status === 401) {
+              handleGoogleAuthExpired();
+              return null;
+            }
+            if (createRes.ok) {
+              const createData = await createRes.json();
+              folderId = createData.id;
+              console.log("Created folder ID:", folderId);
+            } else {
+              throw new Error("Failed to create Google Drive folder: " + await createRes.text());
+            }
+          }
+
+          if (folderId) {
+            localStorage.setItem("google_drive_folder_id", folderId);
+          }
+        }
+
+        if (!folderId) {
+          throw new Error("Unable to establish Notebox folder in Google Drive.");
+        }
+
+        // 2. Validate Sheet
+        let sheetId = localStorage.getItem("google_drive_spreadsheet_id");
+        let sheetValid = false;
+
+        if (sheetId && sheetId !== "undefined") {
+          try {
+            const res = await fetch(`https://www.googleapis.com/drive/v3/files/${sheetId}?fields=id,name,trashed`, {
+              headers: { "Authorization": `Bearer ${token}` }
+            });
+            if (res.status === 401) {
+              handleGoogleAuthExpired();
+              return null;
+            }
+            if (res.ok) {
+              const data = await res.json();
+              if (data.name === "Notebox Master Log" && !data.trashed) {
+                sheetValid = true;
+              }
+            }
+          } catch (err) {
+            console.warn("Spreadsheet validation fetch failed:", err);
+          }
+        }
+
+        if (!sheetValid) {
+          console.log("Spreadsheet invalid or missing. Searching or creating Notebox Master Log...");
+          localStorage.removeItem("google_drive_spreadsheet_id");
+          sheetId = null;
+
+          // Search inside the folder
+          const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='Notebox Master Log' and mimeType='application/vnd.google-apps.spreadsheet' and '${folderId}' in parents and trashed=false&fields=files(id)`, {
+            headers: { "Authorization": `Bearer ${token}` }
+          });
+          if (searchRes.status === 401) {
+            handleGoogleAuthExpired();
+            return null;
+          }
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            if (searchData.files && searchData.files.length > 0) {
+              sheetId = searchData.files[0].id;
+              console.log("Found existing Master Log Google Sheet:", sheetId);
+            }
+          }
+
+          // Create if not found
+          if (!sheetId) {
+            console.log("Creating a brand new 'Notebox Master Log' spreadsheet...");
+            const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
+              method: "POST",
+              headers: {
+                "Authorization": `Bearer ${token}`,
+                "Content-Type": "application/json"
+              },
+              body: JSON.stringify({
+                name: "Notebox Master Log",
+                mimeType: "application/vnd.google-apps.spreadsheet",
+                parents: [folderId]
+              })
+            });
+            if (createRes.status === 401) {
+              handleGoogleAuthExpired();
+              return null;
+            }
+            if (createRes.ok) {
+              const createData = await createRes.json();
+              sheetId = createData.id;
+              console.log("Created Master Log Google Sheet ID:", sheetId);
+            } else {
+              throw new Error("Failed to create Google Sheet: " + await createRes.text());
+            }
+          }
+
+          if (sheetId) {
+            localStorage.setItem("google_drive_spreadsheet_id", sheetId);
+          }
+        }
+
+        if (!sheetId) {
+          throw new Error("Unable to establish Master Log spreadsheet in Google Drive.");
+        }
+
+        // 3. Resolve Sheet Title & Initialize Headers if New
+        let realSheetTitle = "Sheet1";
+        try {
+          const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`, {
+            headers: { "Authorization": `Bearer ${token}` }
+          });
+          if (metaRes.ok) {
+            const metaData = await metaRes.json();
+            if (metaData.sheets && metaData.sheets.length > 0) {
+              realSheetTitle = metaData.sheets[0].properties.title;
+            }
+          }
+        } catch (metaErr) {
+          console.warn("Could not dynamically resolve sheet title:", metaErr);
+        }
+
+        // Double check headers if we just created it or if they might be missing
+        let headersAppended = false;
+        try {
+          const checkRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(realSheetTitle)}!A1:A1`, {
+            headers: { "Authorization": `Bearer ${token}` }
+          });
+          if (checkRes.ok) {
+            const checkData = await checkRes.json();
+            if (checkData.values && checkData.values.length > 0) {
+              headersAppended = true;
+            }
+          }
+        } catch (err) {
+          console.warn("Could not verify headers:", err);
+        }
+
+        if (!headersAppended) {
+          console.log("Appending header row to Notebox Master Log sheet...");
+          const headers = [
+            "Date", 
+            "Note Reference ID", 
+            "Title", 
+            "Text / Transcription", 
+            "Voice Note (Play)", 
+            "Media Link", 
+            "Thumbnail Preview"
+          ];
+          const appendRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(realSheetTitle)}!A1:append?valueInputOption=USER_ENTERED`, {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${token}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              values: [headers]
+            })
+          });
+          if (appendRes.ok) {
+            console.log("Successfully initialized spreadsheet headers.");
+            await formatGoogleSheet(sheetId, token);
+          } else {
+            console.error("Failed to append spreadsheet headers:", await appendRes.text());
+          }
+        }
+
+        updateSyncStatusUI();
+        return { folderId, sheetId, realSheetTitle };
+      } catch (error) {
+        console.error("getOrValidateDriveAssets failure:", error);
+        return null;
+      }
+    }
+
     async function syncNoteToGoogleDrive(noteId, note) {
       const token = localStorage.getItem("google_drive_token");
       if (!token) return;
@@ -2032,33 +2267,36 @@ function getActiveRowMedia() {
       inProgressSyncs.add(noteId);
 
       try {
+        const assets = await getOrValidateDriveAssets(token);
+        if (!assets) {
+          throw new Error("Unable to validate or provision Google Drive folder and spreadsheet assets.");
+        }
+        const { folderId, sheetId, realSheetTitle } = assets;
+
         if (note.trash === true) {
           console.log(`Note ${noteId} is marked as trash. Removing from Google Sheets and Google Drive...`);
           // Step 1: Find spreadsheet ID
-          let spreadsheetId = localStorage.getItem("google_drive_spreadsheet_id");
-          if (spreadsheetId) {
-            // Resolve numericSheetId and realSheetTitle
-            let realSheetTitle = "Sheet1";
+          if (sheetId) {
+            // Resolve numericSheetId
             let numericSheetId = 0;
             try {
-              const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`, {
+              const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`, {
                 headers: { "Authorization": `Bearer ${token}` }
               });
               if (metaRes.ok) {
                 const metaData = await metaRes.json();
                 if (metaData.sheets && metaData.sheets.length > 0) {
-                  realSheetTitle = metaData.sheets[0].properties.title;
                   numericSheetId = metaData.sheets[0].properties.sheetId || 0;
                 }
               }
             } catch (err) {
-              console.warn("Could not resolve spreadsheet metadata:", err);
+              console.warn("Could not resolve spreadsheet metadata for delete:", err);
             }
 
             // Search Column B for this noteId
             let existingRowIndex = -1;
             try {
-              const checkIdRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(realSheetTitle)}!B:B`, {
+              const checkIdRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(realSheetTitle)}!B:B`, {
                 headers: { "Authorization": `Bearer ${token}` }
               });
               if (checkIdRes.ok) {
@@ -2078,7 +2316,7 @@ function getActiveRowMedia() {
 
             if (existingRowIndex !== -1) {
               console.log(`Deleting row ${existingRowIndex} for note ${noteId} from Google Sheets...`);
-              const deleteRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}:batchUpdate`, {
+              const deleteRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}:batchUpdate`, {
                 method: "POST",
                 headers: {
                   "Authorization": `Bearer ${token}`,
@@ -2108,7 +2346,7 @@ function getActiveRowMedia() {
           }
 
           // Step 2: Delete individual text file from Google Drive if driveFileId exists
-          if (note.driveFileId && note.driveFileId !== spreadsheetId) {
+          if (note.driveFileId && note.driveFileId !== sheetId) {
             try {
               console.log(`Deleting file ${note.driveFileId} from Google Drive...`);
               const fileDeleteRes = await fetch(`https://www.googleapis.com/drive/v3/files/${note.driveFileId}`, {
@@ -2131,49 +2369,6 @@ function getActiveRowMedia() {
           });
 
           return; // Exit early since delete is fully synced!
-        }
-        // Step 1: Find or Create the 'Notebox' directory in Google Drive
-        let folderId = localStorage.getItem("google_drive_folder_id");
-        if (!folderId || folderId === "undefined") {
-          const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='Notebox' and mimeType='application/vnd.google-apps.folder' and trashed=false", {
-            headers: { "Authorization": `Bearer ${token}` }
-          });
-          
-          if (searchRes.status === 401) {
-            handleGoogleAuthExpired();
-            return;
-          }
-          
-          const searchData = await searchRes.json();
-          if (searchData.files && searchData.files.length > 0) {
-            folderId = searchData.files[0].id;
-          } else {
-            const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                name: "Notebox",
-                mimeType: "application/vnd.google-apps.folder"
-              })
-            });
-            
-            if (createRes.status === 401) {
-              handleGoogleAuthExpired();
-              return;
-            }
-            
-            const createData = await createRes.json();
-            folderId = createData.id;
-          }
-          
-          if (folderId) {
-            localStorage.setItem("google_drive_folder_id", folderId);
-          } else {
-            throw new Error("Could not retrieve or create 'Notebox' folder ID.");
-          }
         }
 
         // Step 2: Compile rich note document details (transcripts + attachments links)
@@ -2236,116 +2431,6 @@ function getActiveRowMedia() {
           console.log(`Note ${noteId} individual file mirrored successfully: ${uploadedFileId}`);
         } else {
           console.error("Google Drive File Sync failed:", await uploadRes.text());
-        }
-
-        // Step 3: Find or Create the 'Notebox Master Log' Google Sheet in 'Notebox' folder
-        let sheetId = localStorage.getItem("google_drive_spreadsheet_id");
-        let realSheetTitle = "Sheet1";
-        
-        if (!sheetId || sheetId === "undefined") {
-          const sheetSearchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='Notebox Master Log' and mimeType='application/vnd.google-apps.spreadsheet' and '${folderId}' in parents and trashed=false`, {
-            headers: { "Authorization": `Bearer ${token}` }
-          });
-          
-          if (sheetSearchRes.status === 401) {
-            handleGoogleAuthExpired();
-            return;
-          }
-          
-          const sheetSearchData = await sheetSearchRes.json();
-          if (sheetSearchData.files && sheetSearchData.files.length > 0) {
-            sheetId = sheetSearchData.files[0].id;
-            console.log("Found existing Google Sheet Master Log:", sheetId);
-          } else {
-            console.log("Creating new Google Sheet Master Log...");
-            const sheetCreateRes = await fetch("https://www.googleapis.com/drive/v3/files", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                name: "Notebox Master Log",
-                mimeType: "application/vnd.google-apps.spreadsheet",
-                parents: [folderId]
-              })
-            });
-            
-            if (sheetCreateRes.status === 401) {
-              handleGoogleAuthExpired();
-              return;
-            }
-            
-            const sheetCreateData = await sheetCreateRes.json();
-            sheetId = sheetCreateData.id;
-            console.log("Created master spreadsheet ID:", sheetId);
-          }
-          
-          if (sheetId) {
-            localStorage.setItem("google_drive_spreadsheet_id", sheetId);
-          }
-        }
-
-        // Dynamically fetch spreadsheet sheets metadata to get exact title (supporting Russian/German/Georgian default titles etc.)
-        if (sheetId) {
-          try {
-            const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`, {
-              headers: { "Authorization": `Bearer ${token}` }
-            });
-            if (metaRes.ok) {
-              const metaData = await metaRes.json();
-              if (metaData.sheets && metaData.sheets.length > 0) {
-                realSheetTitle = metaData.sheets[0].properties.title;
-                console.log("Dynamically resolved first sheet title:", realSheetTitle);
-              }
-            }
-          } catch (err) {
-            console.warn("Could not dynamically resolve sheet title, falling back to Sheet1:", err);
-          }
-        }
-
-        // If the sheet was newly created (or headers are missing), let's ensure we append headers first
-        let headersAppended = false;
-        if (sheetId) {
-          try {
-            const checkRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(realSheetTitle)}!A1:A1`, {
-              headers: { "Authorization": `Bearer ${token}` }
-            });
-            if (checkRes.ok) {
-              const checkData = await checkRes.json();
-              if (checkData.values && checkData.values.length > 0) {
-                headersAppended = true;
-              }
-            }
-          } catch (err) {
-            console.warn("Could not verify headers, will append if not cached:", err);
-          }
-        }
-
-        if (sheetId && !headersAppended) {
-          console.log("Initializing headers for sheet...");
-          const headers = [
-            "Date", 
-            "Note Reference ID", 
-            "Title", 
-            "Text / Transcription", 
-            "Voice Note (Play)", 
-            "Media Link", 
-            "Thumbnail Preview"
-          ];
-          
-          await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(realSheetTitle)}!A1:append?valueInputOption=USER_ENTERED`, {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${token}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              values: [headers]
-            })
-          });
-          console.log("Initialized spreadsheet header columns.");
-          await formatGoogleSheet(sheetId, token);
         }
 
         // Step 4: Smart Overwrite or Append Note Row to 'Notebox Master Log'
@@ -2566,144 +2651,14 @@ function getActiveRowMedia() {
 
       try {
         console.log("Initializing Google Drive folder & master assets...");
-        let folderId = localStorage.getItem("google_drive_folder_id");
-        if (!folderId || folderId === "undefined") {
-          const searchRes = await fetch("https://www.googleapis.com/drive/v3/files?q=name='Notebox' and mimeType='application/vnd.google-apps.folder' and trashed=false", {
-            headers: { "Authorization": `Bearer ${token}` }
-          });
-          
-          if (searchRes.status === 401) {
-            handleGoogleAuthExpired();
-            return;
-          }
-          
-          const searchData = await searchRes.json();
-          if (searchData.files && searchData.files.length > 0) {
-            folderId = searchData.files[0].id;
-            console.log("Found existing 'Notebox' folder ID:", folderId);
-          } else {
-            console.log("Creating brand new 'Notebox' folder...");
-            const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${token}`,
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                name: "Notebox",
-                mimeType: "application/vnd.google-apps.folder"
-              })
-            });
-            
-            if (createRes.status === 401) {
-              handleGoogleAuthExpired();
-              return;
-            }
-            
-            const createData = await createRes.json();
-            folderId = createData.id;
-            console.log("Successfully created new 'Notebox' folder:", folderId);
-          }
-          
-          if (folderId) {
-            localStorage.setItem("google_drive_folder_id", folderId);
-            updateSyncStatusUI();
-          }
+        const assets = await getOrValidateDriveAssets(token);
+        if (assets) {
+          console.log("Google Drive assets successfully verified:", assets);
+          // Trigger Sheets-to-Firestore deletion mirroring check
+          syncDeletedRowsFromGoogleSheet();
+          // Silently backfill/sync all published active notes on load/initialization
+          backfillAllNotesToDrive();
         }
-
-        // Also ensure the Master Log Google Sheet is pre-initialized in the folder!
-        if (folderId) {
-          let sheetId = localStorage.getItem("google_drive_spreadsheet_id");
-          if (!sheetId || sheetId === "undefined") {
-            const sheetSearchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=name='Notebox Master Log' and mimeType='application/vnd.google-apps.spreadsheet' and '${folderId}' in parents and trashed=false`, {
-              headers: { "Authorization": `Bearer ${token}` }
-            });
-            
-            if (sheetSearchRes.status === 401) {
-              handleGoogleAuthExpired();
-              return;
-            }
-            
-            const sheetSearchData = await sheetSearchRes.json();
-            if (sheetSearchData.files && sheetSearchData.files.length > 0) {
-              sheetId = sheetSearchData.files[0].id;
-              console.log("Found existing Master Log Google Sheet:", sheetId);
-            } else {
-              console.log("Pre-initializing Master Log Google Sheet...");
-              const sheetCreateRes = await fetch("https://www.googleapis.com/drive/v3/files", {
-                method: "POST",
-                headers: {
-                  "Authorization": `Bearer ${token}`,
-                  "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                  name: "Notebox Master Log",
-                  mimeType: "application/vnd.google-apps.spreadsheet",
-                  parents: [folderId]
-                })
-              });
-              
-              if (sheetCreateRes.status === 401) {
-                handleGoogleAuthExpired();
-                return;
-              }
-              
-              const sheetCreateData = await sheetCreateRes.json();
-              sheetId = sheetCreateData.id;
-              console.log("Created master spreadsheet ID:", sheetId);
-              
-              // Dynamically fetch first sheet title (supporting non-English locales)
-              let realSheetTitle = "Sheet1";
-              try {
-                const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}`, {
-                  headers: { "Authorization": `Bearer ${token}` }
-                });
-                if (metaRes.ok) {
-                  const metaData = await metaRes.json();
-                  if (metaData.sheets && metaData.sheets.length > 0) {
-                    realSheetTitle = metaData.sheets[0].properties.title;
-                  }
-                }
-              } catch (metaErr) {
-                console.error("Could not fetch first sheet title metadata:", metaErr);
-              }
-
-              // Append header row immediately
-              const headers = [
-                "Date", 
-                "Note Reference ID", 
-                "Title", 
-                "Text / Transcription", 
-                "Voice Note (Play)", 
-                "Media Link", 
-                "Thumbnail Preview"
-              ];
-              
-              await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/${encodeURIComponent(realSheetTitle)}!A1:append?valueInputOption=USER_ENTERED`, {
-                method: "POST",
-                headers: {
-                  "Authorization": `Bearer ${token}`,
-                  "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                  values: [headers]
-                })
-              });
-              console.log("Initialized spreadsheet header columns.");
-              await formatGoogleSheet(sheetId, token);
-            }
-            
-            if (sheetId) {
-              localStorage.setItem("google_drive_spreadsheet_id", sheetId);
-            }
-          }
-        }
-        
-        // Trigger Sheets-to-Firestore deletion mirroring check
-        syncDeletedRowsFromGoogleSheet();
-        
-        // Silently backfill/sync all published active notes on load/initialization
-        backfillAllNotesToDrive();
       } catch (err) {
         console.error("Google Drive Initialization Error:", err);
       }
@@ -2776,8 +2731,6 @@ function getActiveRowMedia() {
             updateSyncStatusUI();
             
              initializeGoogleDrive().then(() => {
-               // Proactively trigger silent backfill/resync of all active published notes
-               backfillAllNotesToDrive();
                alert("Success: Google Drive is now paired! All your notes are synchronizing to your Google Sheet Master Log.");
              });
           }
