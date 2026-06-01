@@ -251,7 +251,7 @@ bot.on('message', async (msg) => {
         fileUrl: fileUrl,
         thumbnailUrl: thumbnailUrl,
         attachments: [],
-        status: 'draft',
+        status: 'published',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         source: 'telegram',
         isVoice: isVoice
@@ -290,7 +290,8 @@ bot.on('message', async (msg) => {
         const newContent = `${session.content}\n\n📝 ${appendText}`;
         
         await db.collection('notes').doc(session.noteId).update({
-          content: newContent
+          content: newContent,
+          driveSynced: false
         });
         
         session.content = newContent;
@@ -372,7 +373,8 @@ async function processAttachment(msg, chatId) {
   console.log(`[processAttachment] Adding attachment to Firestore noteId: ${session.noteId}`);
   const noteRef = db.collection('notes').doc(session.noteId);
   await noteRef.update({
-    attachments: admin.firestore.FieldValue.arrayUnion(attachment)
+    attachments: admin.firestore.FieldValue.arrayUnion(attachment),
+    driveSynced: false
   });
   
   session.attachmentsCount += 1;

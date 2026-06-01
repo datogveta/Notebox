@@ -1935,8 +1935,8 @@ function getActiveRowMedia() {
             `;
             activeNotesList.appendChild(li);
 
-            // Auto-mirror finalized notes to Google Drive if token exists
-            if (note.status === 'published' && !note.driveSynced && localStorage.getItem("google_drive_token")) {
+            // Auto-mirror notes to Google Drive if token exists
+            if (!note.driveSynced && note.trash !== true && localStorage.getItem("google_drive_token")) {
               syncNoteToGoogleDrive(doc.id, note);
             }
           });
@@ -2747,12 +2747,11 @@ function getActiveRowMedia() {
       
       db.collection("notes")
         .where("uid", "==", user.uid)
-        .where("status", "==", "published")
         .get()
         .then(snapshot => {
           snapshot.forEach(doc => {
             const note = doc.data();
-            if (!note.driveSynced) {
+            if (!note.driveSynced && note.trash !== true) {
               syncNoteToGoogleDrive(doc.id, note);
             }
           });
@@ -2773,13 +2772,7 @@ function getActiveRowMedia() {
         console.log("Automatically backfilling all notes to Google Drive / Sheet...");
         const snapshot = await db.collection("notes")
           .where("uid", "==", user.uid)
-          .where("status", "==", "published")
           .get();
-
-        if (snapshot.empty) {
-          console.log("No published notes found to backfill.");
-          return;
-        }
 
         const docs = [];
         snapshot.forEach(doc => {
@@ -2788,6 +2781,11 @@ function getActiveRowMedia() {
             docs.push(doc);
           }
         });
+
+        if (docs.length === 0) {
+          console.log("No active notes found to backfill.");
+          return;
+        }
 
         // Sort ascending by creation time to append them in chronological order
         docs.sort((a, b) => {
@@ -3211,11 +3209,18 @@ function getActiveRowMedia() {
 
         const snapshot = await db.collection("notes")
           .where("uid", "==", user.uid)
-          .where("status", "==", "published")
           .get();
 
-        if (snapshot.empty) {
-          alert("No published notes found to sync.");
+        const docs = [];
+        snapshot.forEach(doc => {
+          const note = doc.data();
+          if (note.trash !== true) { // don't sync trashed notes
+            docs.push(doc);
+          }
+        });
+
+        if (docs.length === 0) {
+          alert("No active notes found to sync.");
           if (resyncBtn) {
             resyncBtn.disabled = false;
             resyncBtn.innerHTML = `🔄 Re-Sync All to Drive`;
@@ -3223,8 +3228,6 @@ function getActiveRowMedia() {
           return;
         }
 
-        const docs = [];
-        snapshot.forEach(doc => docs.push(doc));
         docs.sort((a, b) => {
           const t1 = a.data().createdAt ? a.data().createdAt.toMillis() : 0;
           const t2 = b.data().createdAt ? b.data().createdAt.toMillis() : 0;
