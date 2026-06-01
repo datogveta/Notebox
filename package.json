@@ -1,0 +1,16 @@
+{
+  "name": "notebox-backend-bot",
+  "version": "1.0.0",
+  "description": "Sovereign Notebox Telegram Cloud Sync Bot",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "@google-cloud/speech": "^7.3.1",
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.0",
+    "firebase-admin": "^11.11.0",
+    "node-telegram-bot-api": "^0.64.0"
+  }
+}

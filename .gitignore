@@ -1,0 +1,7 @@
+# Local environment files
+.env
+firebase_service_account_notebox.json
+
+# Dependencies and caches
+node_modules/
+.firebase/
