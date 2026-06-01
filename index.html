@@ -2021,6 +2021,28 @@ function getActiveRowMedia() {
     // Real-Time Google Drive Sync Engine (Individual Files + Master Google Sheet Logger)
     const inProgressSyncs = new Set();
 
+    function getPublicFirebaseUrl(url) {
+      if (!url || typeof url !== 'string') return "";
+      if (url.includes("storage.googleapis.com")) {
+        try {
+          const parts = url.split("storage.googleapis.com/");
+          if (parts.length > 1) {
+            const bucketAndPath = parts[1];
+            const firstSlashIndex = bucketAndPath.indexOf("/");
+            if (firstSlashIndex !== -1) {
+              const bucket = bucketAndPath.substring(0, firstSlashIndex);
+              const path = bucketAndPath.substring(firstSlashIndex + 1);
+              const encodedPath = encodeURIComponent(path);
+              return `https://firebasestorage.googleapis.com/v0/b/${bucket}/o/${encodedPath}?alt=media`;
+            }
+          }
+        } catch (e) {
+          console.warn("Could not convert raw GCS URL:", e);
+        }
+      }
+      return url;
+    }
+
     async function getOrValidateDriveAssets(token) {
       try {
         let folderId = localStorage.getItem("google_drive_folder_id");
@@ -2451,7 +2473,8 @@ function getActiveRowMedia() {
 
           let voiceFormula = "None";
           if (voiceUrl) {
-            const previewUrl = `${appUrl}/?preview=${encodeURIComponent(voiceUrl)}&type=voice&title=${encodeURIComponent(note.title || 'Voice Note')}`;
+            const publicVoiceUrl = getPublicFirebaseUrl(voiceUrl);
+            const previewUrl = `${appUrl}/?preview=${encodeURIComponent(publicVoiceUrl)}&type=voice&title=${encodeURIComponent(note.title || 'Voice Note')}`;
             voiceFormula = `=HYPERLINK("${previewUrl}", "🎙️ Play Audio")`;
           }
 
@@ -2459,18 +2482,21 @@ function getActiveRowMedia() {
           let thumbnailFormula = "None";
 
           if (note.fileUrl && !note.isVoice) {
-            const previewUrl = `${appUrl}/?preview=${encodeURIComponent(note.fileUrl)}&type=file&title=${encodeURIComponent(note.title || 'Attachment')}`;
+            const publicFileUrl = getPublicFirebaseUrl(note.fileUrl);
+            const previewUrl = `${appUrl}/?preview=${encodeURIComponent(publicFileUrl)}&type=file&title=${encodeURIComponent(note.title || 'Attachment')}`;
             mediaFormula = `=HYPERLINK("${previewUrl}", "🔗 View Attachment")`;
             if (note.thumbnailUrl) {
-              thumbnailFormula = `=IMAGE("${note.thumbnailUrl}")`;
+              const publicThumbUrl = getPublicFirebaseUrl(note.thumbnailUrl);
+              thumbnailFormula = `=IMAGE("${publicThumbUrl}")`;
             }
           } else if (note.attachments && note.attachments.length > 0) {
             const primaryAtt = note.attachments[0];
             const attType = primaryAtt.type || "file";
-            const previewUrl = `${appUrl}/?preview=${encodeURIComponent(primaryAtt.fileUrl)}&type=${attType}&title=${encodeURIComponent(primaryAtt.name || 'Attachment')}`;
+            const publicFileUrl = getPublicFirebaseUrl(primaryAtt.fileUrl);
+            const previewUrl = `${appUrl}/?preview=${encodeURIComponent(publicFileUrl)}&type=${attType}&title=${encodeURIComponent(primaryAtt.name || 'Attachment')}`;
             mediaFormula = `=HYPERLINK("${previewUrl}", "🔗 ${primaryAtt.name}")`;
             if (primaryAtt.type === 'image') {
-              thumbnailFormula = `=IMAGE("${primaryAtt.fileUrl}")`;
+              thumbnailFormula = `=IMAGE("${publicFileUrl}")`;
             }
           }
 
